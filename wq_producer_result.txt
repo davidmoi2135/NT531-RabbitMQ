@@ -1,0 +1,13 @@
+=== Producer Benchmark Result ===
+host: 192.168.1.132:5672
+queue: orders_queue
+messages: 10000
+payload_bytes: ~256
+durable_queue: True
+persistent_msg: False
+publisher_confirms: False
+rate_limit: 0.0 msg/s (0 = unlimited)
+run_id: a6b1b52525
+duration_sec: 1.1323
+throughput_msg_per_sec: 8831.83
+confirm_fail: 0
