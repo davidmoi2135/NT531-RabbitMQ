@@ -3,14 +3,10 @@ set -euo pipefail
 
 WORK_DIR="${WORK_DIR:-${HOME}/NT531-RabbitMQ/work-queue}"
 
-# ===== Thay đổi cho 2 Node =====
-CONTAINER_1="${CONTAINER_1:-rabbit-1}"
-CONTAINER_2="${CONTAINER_2:-rabbit-2}"
-
-RABBIT_HOST="${RABBIT_HOST:-127.0.0.1}"
+RABBIT_HOST="${RABBIT_HOST:-172.31.47.43}"
 RABBIT_PORT="${RABBIT_PORT:-5672}"
 RABBIT_USER="${RABBIT_USER:-admin}"
-RABBIT_PASS="${RABBIT_PASS:-admin123}"
+RABBIT_PASS="${RABBIT_PASS:-123456}"
 
 PRODUCER_PY="${PRODUCER_PY:-${WORK_DIR}/producer.py}"
 WORKER_RUNNER="${WORKER_RUNNER:-${WORK_DIR}/run_workers_until_drained.sh}"
@@ -28,10 +24,6 @@ CPU_DELAY="${CPU_DELAY:-3}"
 POLL_INTERVAL="${POLL_INTERVAL:-1}"
 STABLE_ZERO_COUNT="${STABLE_ZERO_COUNT:-3}"
 
-# ===== modes =====
-# A: non-durable queue, non-persistent msg, confirms OFF
-# B: durable queue, persistent msg, confirms OFF
-# C: durable queue, persistent msg, confirms ON
 MODES=(${MODES:-A B C})
 
 TS="$(TZ=Asia/Ho_Chi_Minh date '+%Y%m%d_%H%M%S')"
@@ -39,35 +31,24 @@ OUT_ROOT="${OUT_ROOT:-${WORK_DIR}/results/${TS}}"
 RESULT_CSV="${RESULT_CSV:-${OUT_ROOT}/summary.csv}"
 mkdir -p "${OUT_ROOT}"
 
-# Đổi lệnh purge queue sang chạy qua docker exec trên Node 1
+# SSH sang Node 2 để dọn queue
 purge_queue() {
   local q="$1"
-  sudo rabbitmqctl purge_queue "${q}" >/dev/null 2>&1 || true
+  ssh -o StrictHostKeyChecking=no ubuntu@172.31.47.43 "sudo rabbitmqctl purge_queue ${q}" >/dev/null 2>&1 || true
 }
 
 mode_cfg() {
-  # outputs: queue_durable producer_flags queue_name
   local mode="$1"
   local base="${QUEUE_BASE:-orders_queue}"
   case "${mode}" in
-    A)
-      echo "0||${base}_A"
-      ;;
-    B)
-      echo "1|--durable --persistent|${base}_B"
-      ;;
-    C)
-      echo "1|--durable --persistent --confirm|${base}_C"
-      ;;
-    *)
-      echo "Unknown mode: ${mode}" >&2
-      exit 1
-      ;;
+    A) echo "0||${base}_A" ;;
+    B) echo "1|--durable --persistent|${base}_B" ;;
+    C) echo "1|--durable --persistent --confirm|${base}_C" ;;
+    *) echo "Unknown mode: ${mode}" >&2; exit 1 ;;
   esac
 }
 
-echo "mode,rate,N,throughput_msgps,latency_avg_ms,latency_p95_ms,cpu_avg_pct,cpu_max_pct,mem_avg_mib,mem_max_mib,acked_count,worker_duration_s,prefetch,payload_bytes,confirm_fail,queue,run_tag" \
-  > "${RESULT_CSV}"
+echo "mode,rate,N,throughput_msgps,latency_avg_ms,latency_p95_ms,cpu_avg_pct,cpu_max_pct,mem_avg_mib,mem_max_mib,acked_count,worker_duration_s,prefetch,payload_bytes,confirm_fail,queue,run_tag" > "${RESULT_CSV}"
 
 for mode in "${MODES[@]}"; do
   IFS="|" read -r queue_durable producer_flags queue_name < <(mode_cfg "${mode}")
@@ -90,9 +71,6 @@ for mode in "${MODES[@]}"; do
 
           purge_queue "${queue_name}"
 
-          # 1) start workers + logger (wait drained)
-          # Truyền CONTAINER_1 và CONTAINER_2 thay vì CONTAINER_NAME
-          # 1) start workers + logger (wait drained)
           OUTPUT_DIR="${run_dir}" \
           CPU_LOG="${cpu_log}" \
           MEM_LOG="${mem_log}" \
@@ -113,7 +91,6 @@ for mode in "${MODES[@]}"; do
 
           sleep 1
 
-          # 2) run producer
           set +e
           producer_out="$(
             python3 "${PRODUCER_PY}" \
@@ -130,7 +107,7 @@ for mode in "${MODES[@]}"; do
           set -e
           echo "${producer_out}" > "${run_dir}/producer_stdout.log"
           if [[ "${rc}" -ne 0 ]]; then
-            echo "Producer failed rc=${rc}, skip. Check ${run_dir}/producer_stdout.log"
+            echo "Producer failed rc=${rc}, skip."
             kill "${workers_pid}" 2>/dev/null || true
             wait "${workers_pid}" 2>/dev/null || true
             continue
@@ -139,10 +116,8 @@ for mode in "${MODES[@]}"; do
           confirm_fail="$(echo "${producer_out}" | awk -F': ' '/^confirm_fail:/ {print $2}' | tail -n1)"
           confirm_fail="${confirm_fail:-0}"
 
-          # 3) wait drained
           wait "${workers_pid}" || true
 
-          # 4) summarize
           metrics="$(
             python3 "${SUMMARIZER}" \
               --run-dir "${run_dir}" \
@@ -151,8 +126,7 @@ for mode in "${MODES[@]}"; do
               --mem-log "mem_rabbit.log"
           )"
 
-          echo "${mode},${rate},${n},${metrics},${prefetch},${size},${confirm_fail},${queue_name},${run_tag}" \
-            >> "${RESULT_CSV}"
+          echo "${mode},${rate},${n},${metrics},${prefetch},${size},${confirm_fail},${queue_name},${run_tag}" >> "${RESULT_CSV}"
 
         done
       done
